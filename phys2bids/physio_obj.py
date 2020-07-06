@@ -5,6 +5,7 @@
 
 import logging
 from itertools import groupby
+from copy import deepcopy
 
 import numpy as np
 
@@ -163,22 +164,22 @@ class BlueprintInput():
 
     Attributes
     ----------
-    timeseries : (ch, [tps]) list
+    timeseries : (ch) list of (tp) 1D arrays
         List of numpy 1d arrays - one for channel, plus one for time.
         Time channel has to be the first.
         Contains all the timeseries recorded.
         Supports different frequencies!
-    freq : (ch) list of floats
+    frequencies : (ch) list of floats
         List of floats - one per channel.
-        Contains all the frequencies of the recorded channel.
+        Contains all the frequencies of the recorded channel, in Hertz.
         Support different frequencies!
-    ch_name : (ch) list of strings
+    channel_names : (ch) list of strings
         List of names of the channels - can be the header of the columns
         in the output files.
     units : (ch) list of strings
         List of the units of the channels.
-    trigger_idx : int
-        The trigger index. Optional. Default is 0.
+    trigger_channel : int
+        The trigger index. Optional. Default is None.
     num_timepoints_found: int or None
         Amount of timepoints found in the automatic count.
         This is initialised as "None" and then computed internally,
@@ -194,10 +195,10 @@ class BlueprintInput():
 
     Methods
     -------
-    ch_amount:
+    n_channels:
         Property. Returns number of channels (ch).
     rename_channels:
-        Changes the list "ch_name" in a controlled way.
+        Changes the list "channel_names" in a controlled way.
     return_index:
         Returns the proper list entry of all the
         properties of the object, given an index.
@@ -206,7 +207,7 @@ class BlueprintInput():
         properties of the object, given an index.
     check_trigger_amount:
         Counts the amounts of triggers and corrects time offset
-        in "time" ndarray. Also adds property ch_amount.
+        in "time" ndarray. Also adds property n_channels.
 
     Notes
     -----
@@ -219,28 +220,28 @@ class BlueprintInput():
     - timeseries[0].shape == timeseries[chtrig].shape
 
     As a consequence:
-    - freq[0] == freq[chtrig]
-    - ch_name[0] = 'time'
+    - frequencies[0] == frequencies[chtrig]
+    - channel_names[0] = 'time'
     - units[0] = 's'
-    - Actual number of channels +1 <= ch_amount
+    - Actual number of channels +1 <= n_channels
     """
 
-    def __init__(self, timeseries, freq, ch_name, units, trigger_idx,
+    def __init__(self, timeseries, frequencies, channel_names, units, trigger_channel,
                  num_timepoints_found=None, thr=None, time_offset=0):
         """Initialise BlueprintInput (see class docstring)."""
         self.timeseries = is_valid(timeseries, list, list_type=np.ndarray)
-        self.freq = has_size(is_valid(freq, list,
-                                      list_type=(int, float)),
-                             self.ch_amount, 0.0)
-        self.ch_name = has_size(ch_name, self.ch_amount, 'unknown')
-        self.units = has_size(units, self.ch_amount, '[]')
-        self.trigger_idx = is_valid(trigger_idx, int)
+        self.frequencies = has_size(is_valid(frequencies, list,
+                                             list_type=(int, float)),
+                                    self.n_channels, 0.0)
+        self.channel_names = has_size(channel_names, self.n_channels, 'unknown')
+        self.units = has_size(units, self.n_channels, '[]')
+        self.trigger_channel = is_valid(trigger_channel, int)
         self.num_timepoints_found = num_timepoints_found
         self.thr = thr
         self.time_offset = time_offset
 
     @property
-    def ch_amount(self):
+    def n_channels(self):
         """
         Property. Return number of channels (ch).
 
@@ -281,12 +282,12 @@ class BlueprintInput():
         potentially, depending on the frequencies, BlueprintInput[1] and
         BlueprintInput[1:2] might return different results.
         """
-        sliced_timeseries = [None] * self.ch_amount
+        sliced_timeseries = [None] * self.n_channels
         return_instant = False
-        if not self.trigger_idx:
-            self.trigger_idx = 0
+        if not self.trigger_channel:
+            self.trigger_channel = 0
 
-        trigger_length = len(self.timeseries[self.trigger_idx])
+        trigger_length = len(self.timeseries[self.trigger_channel])
 
         # If idx is an integer, return an "instantaneous slice" and initialise slice
         if isinstance(idx, int):
@@ -307,7 +308,7 @@ class BlueprintInput():
         # Check that the indexes are not out of bounds
         if idx.start >= trigger_length or idx.stop > trigger_length:
             raise IndexError(f'Slice ({idx.start}, {idx.stop}) is out of '
-                             f'bounds for channel {self.trigger_idx} '
+                             f'bounds for channel {self.trigger_channel} '
                              f'with size {trigger_length}')
 
         # Operate on each channel on its own
@@ -316,8 +317,8 @@ class BlueprintInput():
             # Adapt the slicing indexes to the right requency
             for i in ['start', 'stop', 'step']:
                 if idx_dict[i]:
-                    idx_dict[i] = int(np.floor(self.freq[n]
-                                               / self.freq[self.trigger_idx]
+                    idx_dict[i] = int(np.floor(self.frequencies[n]
+                                               / self.frequencies[self.trigger_channel]
                                                * idx_dict[i]))
 
             # Correct the slicing stop if necessary
@@ -329,8 +330,8 @@ class BlueprintInput():
             new_idx = slice(idx_dict['start'], idx_dict['stop'], idx_dict['step'])
             sliced_timeseries[n] = channel[new_idx]
 
-        return BlueprintInput(sliced_timeseries, self.freq, self.ch_name,
-                              self.units, self.trigger_idx,
+        return BlueprintInput(sliced_timeseries, self.frequencies, self.channel_names,
+                              self.units, self.trigger_channel,
                               self.num_timepoints_found, self.thr,
                               self.time_offset)
 
@@ -349,6 +350,9 @@ class BlueprintInput():
         """
         return are_equal(self, other)
 
+    def copy(self):
+        return deepcopy(self)
+
     def rename_channels(self, new_names):
         """
         Rename the channels.
@@ -363,7 +367,7 @@ class BlueprintInput():
         Notes
         -----
         Outcome:
-        self.ch_name: list of str
+        self.channel_names: list of str
             Changes content to new_name.
         """
         if 'time' in new_names:
@@ -371,8 +375,8 @@ class BlueprintInput():
 
         new_names = ['time', ] + new_names
 
-        self.ch_name = has_size(is_valid(new_names, list, list_type=str),
-                                self.ch_amount, 'unknown')
+        self.channel_names = has_size(is_valid(new_names, list, list_type=str),
+                                      self.n_channels, 'unknown')
 
     def return_index(self, idx):
         """
@@ -389,16 +393,16 @@ class BlueprintInput():
             Tuple containing the proper list entry of all the
             properties of the object with index `idx`
         """
-        return (self.timeseries[idx], self.ch_amount, self.freq[idx],
-                self.ch_name[idx], self.units[idx])
+        return (self.timeseries[idx], self.n_channels, self.frequencies[idx],
+                self.channel_names[idx], self.units[idx])
 
-    def delete_at_index(self, idx):
+    def remove_channels(self, channel_idx):
         """
         Delete the list entries of the object properties, given their index.
 
         Parameters
         ----------
-        idx: int or range
+        idx: int or array
             Index of elements to delete from all lists
 
         Notes
@@ -406,24 +410,26 @@ class BlueprintInput():
         Outcome:
         self.timeseries:
             Removes element at index idx
-        self.freq:
+        self.frequencies:
             Removes element at index idx
-        self.ch_name:
+        self.channel_names:
             Removes element at index idx
         self.units:
             Removes element at index idx
-        self.trigger_idx:
-            If the deleted index was the one of the trigger, set the trigger idx to 0.
+        self.trigger_channel:
+            If the deleted index was the one of the trigger, set the trigger idx to None.
         """
-        del self.timeseries[idx]
-        del self.freq[idx]
-        del self.ch_name[idx]
-        del self.units[idx]
+        channel_idx = np.as_array(channel_idx)
+        for idx in sorted(channel_idx, reverse=True):
+            del self.timeseries[idx]
+            del self.frequencies[idx]
+            del self.channel_names[idx]
+            del self.units[idx]
 
-        if self.trigger_idx == idx:
+        if self.trigger_channel in idx:
             LGR.warning('Removing trigger channel - are you sure you are doing'
                         'the right thing?')
-            self.trigger_idx = 0
+            self.trigger_channel = None
 
     def check_trigger_amount(self, thr=None, num_timepoints_expected=0, tr=0):
         """
@@ -455,8 +461,8 @@ class BlueprintInput():
         LGR.info('Counting trigger points')
         # Use the trigger channel to find the TRs,
         # comparing it to a given threshold.
-        trigger = self.timeseries[self.trigger_idx]
-        LGR.info(f'The trigger is in channel {self.trigger_idx}')
+        trigger = self.timeseries[self.trigger_channel]
+        LGR.info(f'The trigger is in channel {self.trigger_channel}')
         flag = 0
         if thr is None:
             thr = np.mean(trigger) + 2 * np.std(trigger)
@@ -507,6 +513,24 @@ class BlueprintInput():
         self.timeseries[0] -= time_offset
         self.num_timepoints_found = num_timepoints_found
 
+    def to_frequency(self, frequency):
+        """
+        Export a SingleFrequencyPhysio object from object for a given frequency.
+        """
+        if frequency not in self.frequencies:
+            raise ValueError('Frequency must be one of {}'.format(
+                ', '.join(list(set(self.frequencies))))
+            )
+        freq_channels = np.where(self.frequencies != frequencies)[0]
+        temp_obj = self.copy()
+        temp_obj.remove_channels(freq_channels)
+        timeseries = np.asarray(temp_obj.timeseries).T
+        channel_names = temp_obj.channel_names
+        units = temp_obj.units
+        start_time = timeseries[0, 0]
+        return SingleFrequencyPhysio(timeseries, frequency, channel_names,
+                                     units, start_time, filename=None)
+
     def print_info(self, filename):
         """
         Print info on the file, channel by channel.
@@ -525,19 +549,21 @@ class BlueprintInput():
         """
         info = (f'\n------------------------------------------------'
                 f'\nFile {filename} contains:\n')
-        for ch in range(1, self.ch_amount):
-            info = info + (f'{ch:02d}. {self.ch_name[ch]};'
-                           f' sampled at {self.freq[ch]} Hz\n')
+        for ch in range(1, self.n_channels):
+            info = info + (f'{ch:02d}. {self.channel_names[ch]};'
+                           f' sampled at {self.frequencies[ch]} Hz\n')
         info = info + '------------------------------------------------\n'
 
         LGR.info(info)
 
 
-class BlueprintOutput():
+class SingleFrequencyPhysio():
     """
-    Main output object for phys2bids.
+    Data corresponding to a tsv.gz/json pair of BIDS physio files, limited
+    to a single sampling frequency.
 
-    Contains the blueprint to be exported.
+    Parameters
+    ----------
 
     Attributes
     ----------
@@ -545,10 +571,10 @@ class BlueprintOutput():
         Numpy 2d array of timeseries
         Contains all the timeseries recorded.
         Impose same frequency!
-    freq : float
+    frequencies : float
         Shared frequency of the object.
             Properties
-    ch_name : (ch) list of strings
+    channel_names : (ch) list of strings
         List of names of the channels - can be the header of the columns
         in the output files.
     units : (ch) list of strings
@@ -556,13 +582,12 @@ class BlueprintOutput():
     start_time : float
         Starting time of acquisition (equivalent to first TR,
         or to the opposite sign of the time offset).
-    filename : string
-        Filename the object will be saved with. Init as empty string
-
+    filename : str or None
+        Filename the object will be saved with. Init as None.
 
     Methods
     -------
-    ch_amount:
+    n_channels:
         Property. Returns number of channels (ch).
     return_index:
         Returns the proper list entry of all the
@@ -574,17 +599,44 @@ class BlueprintOutput():
         method to populate from input blueprint instead of init
     """
 
-    def __init__(self, timeseries, freq, ch_name, units, start_time, filename=''):
+    def __init__(self, timeseries, frequencies, channel_names, units, start_time, filename=''):
         """Initialise BlueprintOutput (see class docstring)."""
         self.timeseries = is_valid(timeseries, np.ndarray)
-        self.freq = is_valid(freq, (int, float))
-        self.ch_name = has_size(ch_name, self.ch_amount, 'unknown')
-        self.units = has_size(units, self.ch_amount, '[]')
+        self.frequencies = is_valid(frequencies, (int, float))
+        self.channel_names = has_size(channel_names, self.n_channels, 'unknown')
+        self.units = has_size(units, self.n_channels, '[]')
         self.start_time = start_time
         self.filename = is_valid(filename, str)
 
+    def to_channel(self, channel_name):
+        """
+        Generate SingleChannelPhysio object from object for a specific channel.
+        """
+        pass
+
+    @classmethod
+    def load(cls, filename):
+        """
+        Read paired tsv/json to object.
+        """
+        if filename.endswith('json'):
+            json_file = filename
+            tsv_file = filename.replace('json', 'tsv.gz')
+        elif filename.endswith('tsv.gz'):
+            json_file = filename.replace('tsv.gz', 'json')
+            tsv_file = filename
+        else:
+            json_file = filename + '.json'
+            tsv_file = filename + '.tsv.gz'
+
+    def save(self, filename):
+        """
+        Save object to paired tsv/json.
+        """
+        pass
+
     @property
-    def ch_amount(self):
+    def n_channels(self):
         """
         Property. Returns number of channels (ch).
 
@@ -625,8 +677,8 @@ class BlueprintOutput():
             Tuple containing the proper list entry of all the
             properties of the object with index `idx`
         """
-        return (self.timeseries[:, idx], self.ch_amount, self.freq,
-                self.ch_name[idx], self.units[idx], self.start_time)
+        return (self.timeseries[:, idx], self.n_channels, self.frequencies,
+                self.channel_names[idx], self.units[idx], self.start_time)
 
     def delete_at_index(self, idx):
         """
@@ -642,16 +694,16 @@ class BlueprintOutput():
         Outcome:
         self.timeseries:
             Removes element at index idx
-        self.ch_name:
+        self.channel_names:
             Removes element at index idx
         self.units:
             Removes element at index idx
-        self.ch_amount:
+        self.n_channels:
             In all the property that are lists, the element correspondent to
             `idx` gets deleted
         """
         self.timeseries = np.delete(self.timeseries, idx, axis=1)
-        del self.ch_name[idx]
+        del self.channel_names[idx]
         del self.units[idx]
 
     @classmethod
@@ -673,8 +725,8 @@ class BlueprintOutput():
             Populated `BlueprintOutput` object.
         """
         timeseries = np.asarray(blueprint.timeseries).T
-        freq = blueprint.freq[0]
-        ch_name = blueprint.ch_name
+        frequencies = blueprint.frequencies[0]
+        channel_names = blueprint.channel_names
         units = blueprint.units
         start_time = timeseries[0, 0]
-        return cls(timeseries, freq, ch_name, units, start_time)
+        return cls(timeseries, frequencies, channel_names, units, start_time)
