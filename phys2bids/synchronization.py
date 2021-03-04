@@ -15,7 +15,7 @@ from .slice4phys import slice_phys
 LGR = logging.getLogger(__name__)
 
 
-def load_scan_data(layout, sub, ses=None):
+def load_scan_data(dset_dir, sub, ses=None):
     """Extract subject- and session-specific scan onsets and durations from BIDSLayout.
 
     Parameters
@@ -42,30 +42,18 @@ def load_scan_data(layout, sub, ses=None):
     import pandas as pd
 
     # Use the scans.tsv file directly if it is available
-    scans_file = layout.get(extension=".tsv", suffix="scans", subject=sub, session=ses)
-    if scans_file:
-        df = pd.read_table(scans_file)
-        df["original_filename"] = df["filename"]
+    if ses:
+        sub_dir = op.join(dset_dir, "sub-{0}/ses-{1}".format(sub, ses))
+        scans_file = op.join(
+            sub_dir,
+            "sub-{0}_ses-{1}_scans.tsv".format(sub, ses)
+        )
     else:
-        LGR.info(
-            "No scans.tsv detected. "
-            "Attempting to extract relevant metadata from sidecar jsons."
-        )
-        # Collect acquisition times
-        # TODO: Make this search more general.
-        img_files = layout.get(
-            datatype="func",
-            suffix="bold",
-            extension=[".nii.gz", ".nii"],
-            subject=sub,
-            session=ses,
-        )
-        df = pd.DataFrame(
-            columns=["original_filename", "acq_time"],
-        )
-        for i_row, img_file in enumerate(img_files):
-            df.loc[i_row, "original_filename"] = img_file.path
-            df.loc[i_row, "acq_time"] = img_file.get_metadata()["AcquisitionTime"]
+        sub_dir = op.join(dset_dir, "sub-{0}".format(sub))
+        scans_file = op.join(sub_dir, "sub-{0}_scans.tsv".format(sub))
+
+    df = pd.read_table(scans_file)
+    df["original_filename"] = df["filename"]
 
     # Get generic filenames (without within-acquisition entities like echo)
     df["filename"] = df["original_filename"].apply(
@@ -78,7 +66,7 @@ def load_scan_data(layout, sub, ses=None):
     df = df.drop_duplicates(subset="filename", keep="first", ignore_index=True)
 
     # Determine the duration (in seconds) of each scan.
-    df = determine_scan_durations(layout, df, sub=sub, ses=ses)
+    df = determine_scan_durations(sub_dir, df, sub=sub, ses=ses)
     df = df.dropna(subset=["duration"])  # limit to relevant scans
 
     # Convert scan times to relative onsets (first scan is at 0 seconds)
@@ -87,7 +75,7 @@ def load_scan_data(layout, sub, ses=None):
     return df
 
 
-def determine_scan_durations(layout, scan_df, sub, ses=None):
+def determine_scan_durations(sub_dir, scan_df, sub, ses=None):
     """Determine scan durations.
 
     Extract scan durations by loading fMRI files/metadata and
@@ -112,24 +100,15 @@ def determine_scan_durations(layout, scan_df, sub, ses=None):
         Updated DataFrame with new "duration" column.
         Calculated durations are in seconds.
     """
-    # TODO: Make this search more general.
-    func_files = layout.get(
-        datatype="func",
-        suffix="bold",
-        extension=[".nii.gz", ".nii"],
-        subject=sub,
-        session=ses,
-    )
-    scan_df["duration"] = None
-    for func_file in func_files:
-        filename = func_file.path
-        if filename in scan_df["original_filename"].values:
-            n_vols = nib.load(filename).shape[3]
-            tr = func_file.get_metadata()["RepetitionTime"]
+    for f in scan_df["original_filename"].values:
+        fn = op.join(sub_dir, f)
+        img = nib.load(fn)
+        if img.ndim == 4:
+            n_vols = img.shape[3]
+            tr = img.header.get_zooms()[-1]
             duration = n_vols * tr
-            scan_df.loc[scan_df["original_filename"] == filename, "duration"] = duration
-        else:
-            LGR.info(f"Skipping {op.basename(filename)}")
+            scan_df.loc[scan_df["original_filename"] == f, "duration"] = duration
+
     return scan_df
 
 
@@ -435,10 +414,7 @@ def workflow(physio, bids_dir, sub, ses=None, padding=9, update_trigger=False):
     8. Write out scan-associated physio files.
     9. Generate and return scan/physio onsets figure for manual QC.
     """
-    from bids import BIDSLayout
-
-    layout = BIDSLayout(bids_dir)
-    scan_df = load_scan_data(layout, sub=sub, ses=ses)
+    scan_df = load_scan_data(bids_dir, sub=sub, ses=ses)
 
     trigger_timeseries = physio.timeseries[physio.trigger_idx]
     freq = physio.freq[physio.trigger_idx]
